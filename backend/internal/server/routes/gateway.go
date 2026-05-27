@@ -20,12 +20,14 @@ func RegisterGatewayRoutes(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
+	requestAuditService *service.RequestAuditService,
 	cfg *config.Config,
 ) {
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
 	clientRequestID := middleware.ClientRequestID()
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
 	endpointNorm := handler.InboundEndpointMiddleware()
+	requestAudit := middleware.RequestAudit(requestAuditService, service.DefaultRequestAuditMaxBodyBytes)
 
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
@@ -35,6 +37,7 @@ func RegisterGatewayRoutes(
 	gateway := r.Group("/v1")
 	gateway.Use(bodyLimit)
 	gateway.Use(clientRequestID)
+	gateway.Use(requestAudit)
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
@@ -118,6 +121,7 @@ func RegisterGatewayRoutes(
 	gemini := r.Group("/v1beta")
 	gemini.Use(bodyLimit)
 	gemini.Use(clientRequestID)
+	gemini.Use(requestAudit)
 	gemini.Use(opsErrorLogger)
 	gemini.Use(endpointNorm)
 	gemini.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
@@ -137,25 +141,25 @@ func RegisterGatewayRoutes(
 		}
 		h.Gateway.Responses(c)
 	}
-	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
+	r.POST("/responses", bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
+	r.POST("/responses/*subpath", bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
+	r.GET("/responses", bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
 	codexDirect := r.Group("/backend-api/codex")
-	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
+	codexDirect.Use(bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
 	{
 		codexDirect.POST("/responses", responsesHandler)
 		codexDirect.POST("/responses/*subpath", responsesHandler)
 		codexDirect.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
-	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+	r.POST("/chat/completions", bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}
 		h.Gateway.ChatCompletions(c)
 	})
-	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+	r.POST("/images/generations", bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) != service.PlatformOpenAI {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -167,7 +171,7 @@ func RegisterGatewayRoutes(
 		}
 		h.OpenAIGateway.Images(c)
 	})
-	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+	r.POST("/images/edits", bodyLimit, clientRequestID, requestAudit, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) != service.PlatformOpenAI {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -187,6 +191,7 @@ func RegisterGatewayRoutes(
 	antigravityV1 := r.Group("/antigravity/v1")
 	antigravityV1.Use(bodyLimit)
 	antigravityV1.Use(clientRequestID)
+	antigravityV1.Use(requestAudit)
 	antigravityV1.Use(opsErrorLogger)
 	antigravityV1.Use(endpointNorm)
 	antigravityV1.Use(middleware.ForcePlatform(service.PlatformAntigravity))
@@ -202,6 +207,7 @@ func RegisterGatewayRoutes(
 	antigravityV1Beta := r.Group("/antigravity/v1beta")
 	antigravityV1Beta.Use(bodyLimit)
 	antigravityV1Beta.Use(clientRequestID)
+	antigravityV1Beta.Use(requestAudit)
 	antigravityV1Beta.Use(opsErrorLogger)
 	antigravityV1Beta.Use(endpointNorm)
 	antigravityV1Beta.Use(middleware.ForcePlatform(service.PlatformAntigravity))

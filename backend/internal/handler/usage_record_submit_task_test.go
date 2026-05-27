@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -188,4 +189,24 @@ func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_ImageResultUsesMandator
 	close(release)
 
 	require.True(t, called.Load(), "image usage task must be mandatory when async submit is dropped")
+}
+
+func TestOpenAIGatewayHandlerSubmitUsageRecordTaskFromContextPreservesRequestIDs(t *testing.T) {
+	pool := newUsageRecordTestPool(t)
+	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
+	sourceCtx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-req-123")
+	sourceCtx = context.WithValue(sourceCtx, ctxkey.RequestID, "local-req-456")
+
+	done := make(chan struct{})
+	h.submitUsageRecordTaskFromContext(sourceCtx, func(ctx context.Context) {
+		require.Equal(t, "client-req-123", ctx.Value(ctxkey.ClientRequestID))
+		require.Equal(t, "local-req-456", ctx.Value(ctxkey.RequestID))
+		close(done)
+	})
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("task not executed")
+	}
 }

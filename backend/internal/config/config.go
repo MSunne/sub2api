@@ -715,6 +715,8 @@ type GatewayConfig struct {
 	StreamDataIntervalTimeout int `mapstructure:"stream_data_interval_timeout"`
 	// StreamKeepaliveInterval: 流式 keepalive 间隔（秒），0表示禁用
 	StreamKeepaliveInterval int `mapstructure:"stream_keepalive_interval"`
+	// StreamInitialBufferTimeoutMS: 流式首包缓冲最长等待时间（毫秒），0表示不缓冲释放
+	StreamInitialBufferTimeoutMS int `mapstructure:"stream_initial_buffer_timeout_ms"`
 	// ImageStreamDataIntervalTimeout: 图片流数据间隔超时（秒），0表示禁用
 	ImageStreamDataIntervalTimeout int `mapstructure:"image_stream_data_interval_timeout"`
 	// ImageStreamKeepaliveInterval: 图片流式 keepalive 间隔（秒），0表示禁用
@@ -1794,6 +1796,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
+	viper.SetDefault("gateway.stream_initial_buffer_timeout_ms", 1000)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)

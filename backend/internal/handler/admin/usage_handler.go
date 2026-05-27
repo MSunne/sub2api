@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ type UsageHandler struct {
 	apiKeyService  *service.APIKeyService
 	adminService   service.AdminService
 	cleanupService *service.UsageCleanupService
+	auditService   *service.RequestAuditService
 }
 
 // NewUsageHandler creates a new admin usage handler
@@ -33,12 +35,18 @@ func NewUsageHandler(
 	apiKeyService *service.APIKeyService,
 	adminService service.AdminService,
 	cleanupService *service.UsageCleanupService,
+	auditService ...*service.RequestAuditService,
 ) *UsageHandler {
+	var audit *service.RequestAuditService
+	if len(auditService) > 0 {
+		audit = auditService[0]
+	}
 	return &UsageHandler{
 		usageService:   usageService,
 		apiKeyService:  apiKeyService,
 		adminService:   adminService,
 		cleanupService: cleanupService,
+		auditService:   audit,
 	}
 }
 
@@ -197,6 +205,225 @@ func (h *UsageHandler) List(c *gin.Context) {
 		out = append(out, *dto.UsageLogFromServiceAdmin(&records[i]))
 	}
 	response.Paginated(c, out, result.Total, page, pageSize)
+}
+
+// ListAuditLogs handles listing request audit logs.
+// GET /api/v1/admin/usage/audits
+func (h *UsageHandler) ListAuditLogs(c *gin.Context) {
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	page, pageSize := response.ParsePagination(c)
+	params := service.RequestAuditListParams{
+		RequestID: strings.TrimSpace(c.Query("request_id")),
+		Model:     strings.TrimSpace(c.Query("model")),
+		PaginationParams: pagination.PaginationParams{
+			Page:     page,
+			PageSize: pageSize,
+		},
+	}
+	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {
+		id, err := strconv.ParseInt(userIDStr, 10, 64)
+		if err != nil {
+			response.BadRequest(c, "Invalid user_id")
+			return
+		}
+		params.UserID = id
+	}
+	if apiKeyIDStr := strings.TrimSpace(c.Query("api_key_id")); apiKeyIDStr != "" {
+		id, err := strconv.ParseInt(apiKeyIDStr, 10, 64)
+		if err != nil {
+			response.BadRequest(c, "Invalid api_key_id")
+			return
+		}
+		params.APIKeyID = id
+	}
+	if statusStr := strings.TrimSpace(c.Query("status_code")); statusStr != "" {
+		status, err := strconv.Atoi(statusStr)
+		if err != nil {
+			response.BadRequest(c, "Invalid status_code")
+			return
+		}
+		params.StatusCode = status
+	}
+	if successStr := strings.TrimSpace(c.Query("success")); successStr != "" {
+		success, err := strconv.ParseBool(successStr)
+		if err != nil {
+			response.BadRequest(c, "Invalid success value, use true or false")
+			return
+		}
+		params.Success = &success
+	}
+	if startRaw := strings.TrimSpace(c.Query("start_time")); startRaw != "" {
+		t, err := time.Parse(time.RFC3339, startRaw)
+		if err != nil {
+			response.BadRequest(c, "Invalid start_time format, use RFC3339")
+			return
+		}
+		params.StartTime = &t
+	}
+	if endRaw := strings.TrimSpace(c.Query("end_time")); endRaw != "" {
+		t, err := time.Parse(time.RFC3339, endRaw)
+		if err != nil {
+			response.BadRequest(c, "Invalid end_time format, use RFC3339")
+			return
+		}
+		params.EndTime = &t
+	}
+
+	logs, total, err := h.auditService.List(c.Request.Context(), params)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Paginated(c, logs, total, page, pageSize)
+}
+
+// GetAuditLog handles fetching one request audit log by row ID.
+// GET /api/v1/admin/usage/audits/:id
+func (h *UsageHandler) GetAuditLog(c *gin.Context) {
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid audit log id")
+		return
+	}
+	log, err := h.auditService.GetByID(c.Request.Context(), id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit log not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, log)
+}
+
+// GetAuditLogByRequestID handles fetching the latest audit log for a request ID.
+// GET /api/v1/admin/usage/audits/by-request/:request_id
+func (h *UsageHandler) GetAuditLogByRequestID(c *gin.Context) {
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	log, err := h.auditService.GetByRequestID(c.Request.Context(), c.Param("request_id"))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit log not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, log)
+}
+
+// GetAuditLogBody handles fetching one request/response audit body on demand.
+// GET /api/v1/admin/usage/audits/:id/body/:role
+func (h *UsageHandler) GetAuditLogBody(c *gin.Context) {
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid audit log id")
+		return
+	}
+	role := service.RequestAuditBodyRole(strings.TrimSpace(c.Param("role")))
+	if role != service.RequestAuditBodyRoleRequest && role != service.RequestAuditBodyRoleResponse {
+		response.BadRequest(c, "Invalid audit body role")
+		return
+	}
+	body, err := h.auditService.GetBody(c.Request.Context(), id, role)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit body not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, body)
+}
+
+// GetAuditLogByUsageID handles fetching a request audit log for one usage row.
+// GET /api/v1/admin/usage/:id/audit
+func (h *UsageHandler) GetAuditLogByUsageID(c *gin.Context) {
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	usage, ok := h.getUsageLogParam(c)
+	if !ok {
+		return
+	}
+	log, err := h.auditService.GetByUsageLog(c.Request.Context(), *usage)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit log not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, log)
+}
+
+// GetAuditLogBodyByUsageID handles fetching one request/response audit body for one usage row.
+// GET /api/v1/admin/usage/:id/audit/body/:role
+func (h *UsageHandler) GetAuditLogBodyByUsageID(c *gin.Context) {
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	usage, ok := h.getUsageLogParam(c)
+	if !ok {
+		return
+	}
+	log, err := h.auditService.GetByUsageLog(c.Request.Context(), *usage)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit log not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	role := service.RequestAuditBodyRole(strings.TrimSpace(c.Param("role")))
+	if role != service.RequestAuditBodyRoleRequest && role != service.RequestAuditBodyRoleResponse {
+		response.BadRequest(c, "Invalid audit body role")
+		return
+	}
+	body, err := h.auditService.GetBody(c.Request.Context(), log.ID, role)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit body not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, body)
+}
+
+func (h *UsageHandler) getUsageLogParam(c *gin.Context) (*service.UsageLog, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid usage ID")
+		return nil, false
+	}
+	record, err := h.usageService.GetByID(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, false
+	}
+	return record, true
 }
 
 // Stats handles getting usage statistics with filters

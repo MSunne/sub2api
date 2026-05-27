@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"database/sql"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -20,13 +22,19 @@ import (
 type UsageHandler struct {
 	usageService  *service.UsageService
 	apiKeyService *service.APIKeyService
+	auditService  *service.RequestAuditService
 }
 
 // NewUsageHandler creates a new UsageHandler
-func NewUsageHandler(usageService *service.UsageService, apiKeyService *service.APIKeyService) *UsageHandler {
+func NewUsageHandler(usageService *service.UsageService, apiKeyService *service.APIKeyService, auditServices ...*service.RequestAuditService) *UsageHandler {
+	var auditService *service.RequestAuditService
+	if len(auditServices) > 0 {
+		auditService = auditServices[0]
+	}
 	return &UsageHandler{
 		usageService:  usageService,
 		apiKeyService: apiKeyService,
+		auditService:  auditService,
 	}
 }
 
@@ -177,6 +185,102 @@ func (h *UsageHandler) GetByID(c *gin.Context) {
 	}
 
 	response.Success(c, dto.UsageLogFromService(record))
+}
+
+// GetAuditLogByUsageID handles fetching a request audit log for one owned usage record.
+// GET /api/v1/usage/:id/audit
+func (h *UsageHandler) GetAuditLogByUsageID(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	usage, ok := h.getOwnedUsageLog(c, subject.UserID)
+	if !ok {
+		return
+	}
+	log, err := h.auditService.GetByUsageLog(c.Request.Context(), *usage)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit log not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	if log.UserID != subject.UserID {
+		response.Forbidden(c, "Not authorized to access this audit log")
+		return
+	}
+	response.Success(c, log)
+}
+
+// GetAuditLogBodyByUsageID handles fetching one request/response audit body for an owned usage record.
+// GET /api/v1/usage/:id/audit/body/:role
+func (h *UsageHandler) GetAuditLogBodyByUsageID(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if h.auditService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Request audit service is not available")
+		return
+	}
+	usage, ok := h.getOwnedUsageLog(c, subject.UserID)
+	if !ok {
+		return
+	}
+	log, err := h.auditService.GetByUsageLog(c.Request.Context(), *usage)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit log not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	if log.UserID != subject.UserID {
+		response.Forbidden(c, "Not authorized to access this audit log")
+		return
+	}
+	role := service.RequestAuditBodyRole(strings.TrimSpace(c.Param("role")))
+	if role != service.RequestAuditBodyRoleRequest && role != service.RequestAuditBodyRoleResponse {
+		response.BadRequest(c, "Invalid audit body role")
+		return
+	}
+	body, err := h.auditService.GetBody(c.Request.Context(), log.ID, role)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(c, "Request audit body not found")
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, body)
+}
+
+func (h *UsageHandler) getOwnedUsageLog(c *gin.Context, userID int64) (*service.UsageLog, bool) {
+	usageID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid usage ID")
+		return nil, false
+	}
+	record, err := h.usageService.GetByID(c.Request.Context(), usageID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, false
+	}
+	if record.UserID != userID {
+		response.Forbidden(c, "Not authorized to access this record")
+		return nil, false
+	}
+	return record, true
 }
 
 // Stats handles getting usage statistics

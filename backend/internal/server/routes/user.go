@@ -82,6 +82,8 @@ func RegisterUserRoutes(
 		{
 			usage.GET("", h.Usage.List)
 			usage.GET("/:id", h.Usage.GetByID)
+			usage.GET("/:id/audit", h.Usage.GetAuditLogByUsageID)
+			usage.GET("/:id/audit/body/:role", h.Usage.GetAuditLogBodyByUsageID)
 			usage.GET("/stats", h.Usage.Stats)
 			// User dashboard endpoints
 			usage.GET("/dashboard/stats", h.Usage.DashboardStats)

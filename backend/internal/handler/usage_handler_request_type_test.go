@@ -18,6 +18,46 @@ type userUsageRepoCapture struct {
 	service.UsageLogRepository
 	listParams  pagination.PaginationParams
 	listFilters usagestats.UsageLogFilters
+	usageByID   *service.UsageLog
+}
+
+type userUsageAuditRepoStub struct {
+	logs []service.RequestAuditLog
+	body *service.RequestAuditBody
+}
+
+func (s *userUsageAuditRepoStub) Create(ctx context.Context, log *service.RequestAuditLog, bodies []service.RequestAuditBody) error {
+	return nil
+}
+
+func (s *userUsageAuditRepoStub) List(ctx context.Context, params service.RequestAuditListParams) ([]service.RequestAuditLog, int64, error) {
+	return s.logs, int64(len(s.logs)), nil
+}
+
+func (s *userUsageAuditRepoStub) GetByID(ctx context.Context, id int64) (*service.RequestAuditLog, error) {
+	for i := range s.logs {
+		if s.logs[i].ID == id {
+			return &s.logs[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *userUsageAuditRepoStub) GetByRequestID(ctx context.Context, requestID string) (*service.RequestAuditLog, error) {
+	for i := range s.logs {
+		if s.logs[i].RequestID == requestID {
+			return &s.logs[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *userUsageAuditRepoStub) GetBody(ctx context.Context, auditLogID int64, role service.RequestAuditBodyRole) (*service.RequestAuditBody, error) {
+	return s.body, nil
+}
+
+func (s *userUsageAuditRepoStub) CleanupOverflow(ctx context.Context, maxRows int) (int64, error) {
+	return 0, nil
 }
 
 func (s *userUsageRepoCapture) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters usagestats.UsageLogFilters) ([]service.UsageLog, *pagination.PaginationResult, error) {
@@ -29,6 +69,13 @@ func (s *userUsageRepoCapture) ListWithFilters(ctx context.Context, params pagin
 		PageSize: params.PageSize,
 		Pages:    0,
 	}, nil
+}
+
+func (s *userUsageRepoCapture) GetByID(ctx context.Context, id int64) (*service.UsageLog, error) {
+	if s.usageByID != nil {
+		return s.usageByID, nil
+	}
+	return &service.UsageLog{ID: id, UserID: 42, APIKeyID: 7, RequestID: "client:req-1"}, nil
 }
 
 func newUserUsageRequestTypeTestRouter(repo *userUsageRepoCapture) *gin.Engine {
@@ -79,4 +126,50 @@ func TestUserUsageListInvalidStream(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestUserUsageAuditRequiresUsageOwnership(t *testing.T) {
+	repo := &userUsageRepoCapture{
+		usageByID: &service.UsageLog{ID: 9, UserID: 99, APIKeyID: 7, RequestID: "client:req-1"},
+	}
+	usageSvc := service.NewUsageService(repo, nil, nil, nil)
+	auditSvc := service.NewRequestAuditService(&userUsageAuditRepoStub{
+		logs: []service.RequestAuditLog{{ID: 3, UserID: 99, APIKeyID: 7, RequestID: "req-1"}},
+	})
+	handler := NewUsageHandler(usageSvc, nil, auditSvc)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 42})
+		c.Next()
+	})
+	router.GET("/usage/:id/audit", handler.GetAuditLogByUsageID)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/9/audit", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestUserUsageAuditReturnsOwnedAudit(t *testing.T) {
+	repo := &userUsageRepoCapture{
+		usageByID: &service.UsageLog{ID: 9, UserID: 42, APIKeyID: 7, RequestID: "client:req-1"},
+	}
+	usageSvc := service.NewUsageService(repo, nil, nil, nil)
+	auditSvc := service.NewRequestAuditService(&userUsageAuditRepoStub{
+		logs: []service.RequestAuditLog{{ID: 3, UserID: 42, APIKeyID: 7, RequestID: "req-1"}},
+	})
+	handler := NewUsageHandler(usageSvc, nil, auditSvc)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 42})
+		c.Next()
+	})
+	router.GET("/usage/:id/audit", handler.GetAuditLogByUsageID)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/9/audit", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
 }

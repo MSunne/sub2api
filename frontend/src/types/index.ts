@@ -1256,6 +1256,57 @@ export interface AdminUsageLog extends UsageLog {
   account?: UsageLogAccountSummary
 }
 
+export interface RequestAuditLog {
+  id: number
+  request_id: string
+  user_id: number
+  api_key_id: number
+  account_id?: number | null
+  group_id?: number | null
+  platform: string
+  model: string
+  endpoint: string
+  stream: boolean
+  status_code: number
+  success: boolean
+  duration_ms: number
+  request_body: string
+  response_body: string
+  error_body: string
+  request_content_type: string
+  response_content_type: string
+  request_body_kind: RequestAuditBodyKind | ''
+  response_body_kind: RequestAuditBodyKind | ''
+  request_truncated: boolean
+  response_truncated: boolean
+  request_bytes: number
+  response_bytes: number
+  created_at: string
+  user_email?: string | null
+  api_key_name?: string | null
+  account_name?: string | null
+  group_name?: string | null
+}
+
+export type RequestAuditBodyRole = 'request' | 'response'
+export type RequestAuditBodyKind = 'json' | 'sse' | 'text' | 'image' | 'audio' | 'binary'
+export type RequestAuditBodyEncoding = 'text' | 'base64'
+
+export interface RequestAuditBody {
+  id: number
+  audit_log_id: number
+  role: RequestAuditBodyRole
+  body_kind: RequestAuditBodyKind
+  content_type: string
+  content_encoding: RequestAuditBodyEncoding
+  body: string
+  truncated: boolean
+  size_bytes: number
+  previewable: boolean
+  media_mime: string
+  created_at: string
+}
+
 export interface UsageCleanupFilters {
   start_time: string
   end_time: string

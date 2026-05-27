@@ -429,7 +429,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
-		h.submitOpenAIUsageRecordTask(result, func(ctx context.Context) {
+		h.submitOpenAIUsageRecordTaskFromContext(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
@@ -805,7 +805,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 
-		h.submitOpenAIUsageRecordTask(result, func(ctx context.Context) {
+		h.submitOpenAIUsageRecordTaskFromContext(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
@@ -1370,7 +1370,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 			inboundEndpoint := GetInboundEndpoint(c)
 			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
-			h.submitOpenAIUsageRecordTask(result, func(taskCtx context.Context) {
+			h.submitOpenAIUsageRecordTaskFromContext(c.Request.Context(), result, func(taskCtx context.Context) {
 				if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
 					Result:             result,
 					APIKey:             apiKey,
@@ -1546,6 +1546,10 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTas
 	task(ctx)
 }
 
+func (h *OpenAIGatewayHandler) submitUsageRecordTaskFromContext(source context.Context, task service.UsageRecordTask) {
+	h.submitUsageRecordTask(bindUsageRecordContext(source, task))
+}
+
 func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(result *service.OpenAIForwardResult, task service.UsageRecordTask) {
 	if result != nil && result.ImageCount > 0 {
 		h.submitMandatoryUsageRecordTask(task)
@@ -1577,6 +1581,18 @@ func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTask(task service.Usage
 		}
 	}()
 	task(ctx)
+}
+
+func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTaskFromContext(source context.Context, result *service.OpenAIForwardResult, task service.UsageRecordTask) {
+	if result != nil && result.ImageCount > 0 {
+		h.submitMandatoryUsageRecordTaskFromContext(source, task)
+		return
+	}
+	h.submitUsageRecordTaskFromContext(source, task)
+}
+
+func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTaskFromContext(source context.Context, task service.UsageRecordTask) {
+	h.submitMandatoryUsageRecordTask(bindUsageRecordContext(source, task))
 }
 
 func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, streamStarted bool) (func(), bool) {

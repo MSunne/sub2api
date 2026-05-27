@@ -10,7 +10,10 @@ import type {
   UsageStatsResponse,
   PaginatedResponse,
   TrendDataPoint,
-  ModelStat
+  ModelStat,
+  RequestAuditLog,
+  RequestAuditBody,
+  RequestAuditBodyRole
 } from '@/types'
 
 // ==================== Dashboard Types ====================
@@ -209,6 +212,19 @@ export async function getByDateRange(
   return data
 }
 
+export async function getAuditByUsageId(usageId: number): Promise<RequestAuditLog> {
+  const { data } = await apiClient.get<RequestAuditLog>(`/usage/${usageId}/audit`)
+  return data
+}
+
+export async function getAuditBodyByUsageId(
+  usageId: number,
+  role: RequestAuditBodyRole
+): Promise<RequestAuditBody> {
+  const { data } = await apiClient.get<RequestAuditBody>(`/usage/${usageId}/audit/body/${role}`)
+  return data
+}
+
 /**
  * Get detailed usage log by ID
  * @param id - Usage log ID
@@ -311,6 +327,8 @@ export const usageAPI = {
   getStatsByDateRange,
   getByDateRange,
   getById,
+  getAuditByUsageId,
+  getAuditBodyByUsageId,
   // Dashboard
   getDashboardStats,
   getDashboardTrend,

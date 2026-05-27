@@ -183,6 +183,17 @@
           <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
         </template>
 
+        <template #cell-actions="{ row }">
+          <button
+            class="inline-flex items-center gap-1.5 rounded border border-primary-200 bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 transition-colors hover:bg-primary-100 dark:border-primary-700 dark:bg-primary-900/30 dark:text-primary-200 dark:hover:bg-primary-900/50"
+            @click="$emit('auditClick', row)"
+            title="查看提交参数和运行结果"
+          >
+            <Icon name="infoCircle" size="xs" />
+            <span>参数/结果</span>
+          </button>
+        </template>
+
         <template #empty><EmptyState :message="t('usage.noRecords')" /></template>
       </DataTable>
     </div>
@@ -441,6 +452,7 @@ withDefaults(defineProps<Props>(), {
 })
 defineEmits<{
   userClick: [userID: number, email?: string]
+  auditClick: [row: AdminUsageLog]
   sort: [key: string, order: 'asc' | 'desc']
 }>()
 const { t } = useI18n()

@@ -274,29 +274,48 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	clientOutputStarted := false
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	initialBufferTimeout := s.streamInitialBufferTimeout()
+	var firstPendingAt time.Time
 
+	releasePending := func() {
+		if clientDisconnected || clientOutputStarted {
+			return
+		}
+		writeStreamHeaders()
+		for _, pending := range pendingLines {
+			if _, werr := c.Writer.WriteString(pending + "\n"); werr != nil {
+				clientDisconnected = true
+				logger.L().Debug("openai chat_completions raw: client disconnected while releasing pending stream buffer",
+					zap.Error(werr),
+					zap.String("request_id", requestID),
+				)
+				return
+			}
+		}
+		pendingLines = pendingLines[:0]
+		clientOutputStarted = true
+		c.Writer.Flush()
+		logger.L().Debug("openai chat_completions raw: released initial stream buffer",
+			zap.String("request_id", requestID),
+			zap.Duration("timeout", initialBufferTimeout),
+		)
+	}
 	writeLine := func(line string) {
 		if clientDisconnected {
 			return
 		}
 		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+			if firstPendingAt.IsZero() {
+				firstPendingAt = time.Now()
+			}
 			pendingLines = append(pendingLines, line)
 			return
 		}
 		if !clientOutputStarted {
-			writeStreamHeaders()
-			for _, pending := range pendingLines {
-				if _, werr := c.Writer.WriteString(pending + "\n"); werr != nil {
-					clientDisconnected = true
-					logger.L().Debug("openai chat_completions raw: client disconnected, continuing to drain upstream for billing",
-						zap.Error(werr),
-						zap.String("request_id", requestID),
-					)
-					return
-				}
+			releasePending()
+			if clientDisconnected {
+				return
 			}
-			pendingLines = pendingLines[:0]
-			clientOutputStarted = true
 		}
 		if _, werr := c.Writer.WriteString(line + "\n"); werr != nil {
 			clientDisconnected = true
@@ -307,39 +326,110 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		refusalDetector.ObserveSSELine(line)
-		if payload, ok := extractOpenAISSEDataLine(line); ok {
-			trimmedPayload := strings.TrimSpace(payload)
-			if trimmedPayload != "[DONE]" {
-				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
-				if u := extractCCStreamUsage(payload); u != nil {
-					usage = *u
-				}
-				if firstTokenMs == nil && !usageOnlyChunk {
-					elapsed := int(time.Since(startTime).Milliseconds())
-					firstTokenMs = &elapsed
+	type scanEvent struct {
+		line string
+		err  error
+	}
+	events := make(chan scanEvent, 16)
+	go func() {
+		defer close(events)
+		for scanner.Scan() {
+			events <- scanEvent{line: scanner.Text()}
+		}
+		if err := scanner.Err(); err != nil {
+			events <- scanEvent{err: err}
+		}
+	}()
+	var initialBufferTimer *time.Timer
+	var initialBufferCh <-chan time.Time
+	stopInitialBufferTimer := func() {
+		if initialBufferTimer != nil {
+			if !initialBufferTimer.Stop() {
+				select {
+				case <-initialBufferTimer.C:
+				default:
 				}
 			}
+			initialBufferTimer = nil
+			initialBufferCh = nil
 		}
+	}
+	armInitialBufferTimer := func() {
+		if initialBufferTimeout <= 0 || firstPendingAt.IsZero() || clientOutputStarted || clientDisconnected {
+			stopInitialBufferTimer()
+			return
+		}
+		delay := time.Until(firstPendingAt.Add(initialBufferTimeout))
+		if delay < 0 {
+			delay = 0
+		}
+		if initialBufferTimer == nil {
+			initialBufferTimer = time.NewTimer(delay)
+			initialBufferCh = initialBufferTimer.C
+			return
+		}
+		if !initialBufferTimer.Stop() {
+			select {
+			case <-initialBufferTimer.C:
+			default:
+			}
+		}
+		initialBufferTimer.Reset(delay)
+		initialBufferCh = initialBufferTimer.C
+	}
+	defer stopInitialBufferTimer()
 
-		writeLine(line)
-		if line == "" {
+	var scanErr error
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				goto streamDone
+			}
+			if ev.err != nil {
+				scanErr = ev.err
+				goto streamDone
+			}
+			line := ev.line
+			refusalDetector.ObserveSSELine(line)
+			if payload, ok := extractOpenAISSEDataLine(line); ok {
+				trimmedPayload := strings.TrimSpace(payload)
+				if trimmedPayload != "[DONE]" {
+					usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
+					if u := extractCCStreamUsage(payload); u != nil {
+						usage = *u
+					}
+					if firstTokenMs == nil && !usageOnlyChunk {
+						elapsed := int(time.Since(startTime).Milliseconds())
+						firstTokenMs = &elapsed
+					}
+				}
+			}
+
+			writeLine(line)
+			if line == "" {
+				if !clientDisconnected && clientOutputStarted {
+					c.Writer.Flush()
+				}
+				continue
+			}
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
 			}
-			continue
-		}
-		if !clientDisconnected && clientOutputStarted {
-			c.Writer.Flush()
+			armInitialBufferTimer()
+		case <-initialBufferCh:
+			if !clientOutputStarted && len(pendingLines) > 0 && openAIStreamInitialBufferExpired(firstPendingAt, time.Now(), initialBufferTimeout) {
+				releasePending()
+			}
+			armInitialBufferTimer()
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+streamDone:
+	if scanErr != nil {
+		if !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
 			logger.L().Warn("openai chat_completions raw: stream read error",
-				zap.Error(err),
+				zap.Error(scanErr),
 				zap.String("request_id", requestID),
 			)
 		}

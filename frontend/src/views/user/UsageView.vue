@@ -196,6 +196,15 @@
             </span>
           </template>
 
+          <template #cell-actions="{ row }">
+            <button
+              class="rounded border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-dark-600 dark:text-gray-200 dark:hover:bg-dark-700"
+              @click="handleAuditClick(row)"
+            >
+              查看
+            </button>
+          </template>
+
           <template #cell-tokens="{ row }">
             <!-- 图片生成请求 -->
             <div v-if="isImageUsage(row)" class="flex items-center gap-1.5">
@@ -346,6 +355,44 @@
       </template>
     </TablePageLayout>
   </AppLayout>
+
+  <BaseDialog :show="showAuditModal" title="请求审计详情" width="wide" @close="closeAuditModal">
+    <div class="space-y-4">
+      <div v-if="auditLoading" class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">加载中...</div>
+      <div v-else-if="auditMissing" class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">未采集或已清理</div>
+      <template v-else-if="selectedAudit">
+        <div class="grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
+          <div><span class="text-gray-500">Request ID</span><div class="break-all font-mono text-gray-900 dark:text-white">{{ selectedAudit.request_id }}</div></div>
+          <div><span class="text-gray-500">状态</span><div class="font-medium" :class="selectedAudit.success ? 'text-emerald-600' : 'text-rose-600'">{{ selectedAudit.status_code }} / {{ selectedAudit.success ? '成功' : '失败' }}</div></div>
+          <div><span class="text-gray-500">耗时</span><div class="text-gray-900 dark:text-white">{{ selectedAudit.duration_ms }}ms</div></div>
+          <div><span class="text-gray-500">模型</span><div class="break-all text-gray-900 dark:text-white">{{ selectedAudit.model || '-' }}</div></div>
+          <div><span class="text-gray-500">平台</span><div class="text-gray-900 dark:text-white">{{ selectedAudit.platform || '-' }}</div></div>
+          <div><span class="text-gray-500">Endpoint</span><div class="break-all text-gray-900 dark:text-white">{{ selectedAudit.endpoint || '-' }}</div></div>
+          <div><span class="text-gray-500">请求大小</span><div class="text-gray-900 dark:text-white">{{ formatAuditBytes(selectedAudit.request_bytes) }}</div></div>
+          <div><span class="text-gray-500">响应大小</span><div class="text-gray-900 dark:text-white">{{ formatAuditBytes(selectedAudit.response_bytes) }}</div></div>
+          <div><span class="text-gray-500">内容类型</span><div class="text-gray-900 dark:text-white">{{ selectedAudit.request_body_kind || '-' }} / {{ selectedAudit.response_body_kind || '-' }}</div></div>
+        </div>
+        <div class="flex border-b border-gray-200 dark:border-dark-600">
+          <button
+            class="-mb-px border-b-2 px-4 py-2 text-sm font-medium"
+            :class="auditBodyTab === 'request' ? 'border-primary-500 text-primary-600 dark:text-primary-300' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'"
+            @click="auditBodyTab = 'request'"
+          >
+            提交参数
+          </button>
+          <button
+            class="-mb-px border-b-2 px-4 py-2 text-sm font-medium"
+            :class="auditBodyTab === 'response' ? 'border-primary-500 text-primary-600 dark:text-primary-300' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'"
+            @click="auditBodyTab = 'response'"
+          >
+            运行结果
+          </button>
+        </div>
+        <RequestAuditBodyPanel v-if="auditBodyTab === 'request'" :audit="selectedAudit" role="request" :load-body="loadUserAuditBody" />
+        <RequestAuditBodyPanel v-else :audit="selectedAudit" role="response" :load-body="loadUserAuditBody" />
+      </template>
+    </div>
+  </BaseDialog>
 
   <!-- Token Tooltip Portal -->
   <Teleport to="body">
@@ -549,8 +596,10 @@ import Pagination from '@/components/common/Pagination.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Select from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import RequestAuditBodyPanel from '@/components/usage/RequestAuditBodyPanel.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse } from '@/types'
+import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse, RequestAuditLog, RequestAuditBody, RequestAuditBodyRole } from '@/types'
 import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
@@ -589,6 +638,12 @@ const tokenTooltipData = ref<UsageLog | null>(null)
 
 // Usage stats from API
 const usageStats = ref<UsageStatsResponse | null>(null)
+const showAuditModal = ref(false)
+const auditLoading = ref(false)
+const auditMissing = ref(false)
+const selectedAudit = ref<RequestAuditLog | null>(null)
+const selectedAuditUsage = ref<UsageLog | null>(null)
+const auditBodyTab = ref<'request' | 'response'>('request')
 
 const columns = computed<Column[]>(() => [
   { key: 'api_key', label: t('usage.apiKeyFilter'), sortable: false },
@@ -597,6 +652,7 @@ const columns = computed<Column[]>(() => [
   { key: 'endpoint', label: t('usage.endpoint'), sortable: false },
   { key: 'stream', label: t('usage.type'), sortable: false },
   { key: 'billing_mode', label: t('admin.usage.billingMode'), sortable: false },
+  { key: 'actions', label: '参数/结果', sortable: false },
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
   { key: 'first_token', label: t('usage.firstToken'), sortable: false },
@@ -669,6 +725,13 @@ const sortState = reactive({
 const formatDuration = (ms: number): string => {
   if (ms < 1000) return `${ms.toFixed(0)}ms`
   return `${(ms / 1000).toFixed(2)}s`
+}
+
+const formatAuditBytes = (bytes: number) => {
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
 const imageUnitPrice = (row: UsageLog | null): number => {
@@ -846,6 +909,36 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
   sortState.sort_order = order
   pagination.page = 1
   loadUsageLogs()
+}
+
+const handleAuditClick = async (row: UsageLog) => {
+  showAuditModal.value = true
+  auditLoading.value = true
+  auditMissing.value = false
+  selectedAudit.value = null
+  selectedAuditUsage.value = row
+  auditBodyTab.value = 'request'
+  try {
+    selectedAudit.value = await usageAPI.getAuditByUsageId(row.id)
+  } catch {
+    auditMissing.value = true
+  } finally {
+    auditLoading.value = false
+  }
+}
+
+const closeAuditModal = () => {
+  showAuditModal.value = false
+  selectedAudit.value = null
+  selectedAuditUsage.value = null
+  auditMissing.value = false
+}
+
+const loadUserAuditBody = async (_auditId: number, role: RequestAuditBodyRole): Promise<RequestAuditBody> => {
+  if (!selectedAuditUsage.value) {
+    throw new Error('usage record is not selected')
+  }
+  return usageAPI.getAuditBodyByUsageId(selectedAuditUsage.value.id, role)
 }
 
 /**

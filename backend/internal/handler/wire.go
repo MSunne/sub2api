@@ -93,6 +93,14 @@ func ProvideAdminSettingHandler(settingService *service.SettingService, emailSer
 	return h
 }
 
+func ProvideAdminUsageHandler(usageService *service.UsageService, apiKeyService *service.APIKeyService, adminService service.AdminService, cleanupService *service.UsageCleanupService, auditService *service.RequestAuditService) *admin.UsageHandler {
+	return admin.NewUsageHandler(usageService, apiKeyService, adminService, cleanupService, auditService)
+}
+
+func ProvideUsageHandler(usageService *service.UsageService, apiKeyService *service.APIKeyService, auditService *service.RequestAuditService) *UsageHandler {
+	return NewUsageHandler(usageService, apiKeyService, auditService)
+}
+
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
 	authHandler *AuthHandler,
@@ -140,7 +148,7 @@ var ProviderSet = wire.NewSet(
 	NewAuthHandler,
 	NewUserHandler,
 	NewAPIKeyHandler,
-	NewUsageHandler,
+	ProvideUsageHandler,
 	NewRedeemHandler,
 	NewSubscriptionHandler,
 	NewAnnouncementHandler,
@@ -172,7 +180,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewOpsHandler,
 	ProvideSystemHandler,
 	admin.NewSubscriptionHandler,
-	admin.NewUsageHandler,
+	ProvideAdminUsageHandler,
 	admin.NewUserAttributeHandler,
 	admin.NewErrorPassthroughHandler,
 	admin.NewTLSFingerprintProfileHandler,

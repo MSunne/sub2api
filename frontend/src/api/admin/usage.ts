@@ -4,7 +4,7 @@
  */
 
 import { apiClient } from '../client'
-import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
+import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType, RequestAuditLog, RequestAuditBody, RequestAuditBodyRole } from '@/types'
 import type { EndpointStat } from '@/types'
 
 // ==================== Types ====================
@@ -196,6 +196,27 @@ export async function cancelCleanupTask(taskId: number): Promise<{ id: number; s
   return data
 }
 
+export async function getAuditByRequestId(requestId: string): Promise<RequestAuditLog> {
+  const { data } = await apiClient.get<RequestAuditLog>(
+    `/admin/usage/audits/by-request/${encodeURIComponent(requestId)}`
+  )
+  return data
+}
+
+export async function getAuditByUsageId(usageId: number): Promise<RequestAuditLog> {
+  const { data } = await apiClient.get<RequestAuditLog>(
+    `/admin/usage/${usageId}/audit`
+  )
+  return data
+}
+
+export async function getAuditBody(auditId: number, role: RequestAuditBodyRole): Promise<RequestAuditBody> {
+  const { data } = await apiClient.get<RequestAuditBody>(
+    `/admin/usage/audits/${auditId}/body/${role}`
+  )
+  return data
+}
+
 export const adminUsageAPI = {
   list,
   getStats,
@@ -203,7 +224,10 @@ export const adminUsageAPI = {
   searchApiKeys,
   listCleanupTasks,
   createCleanupTask,
-  cancelCleanupTask
+  cancelCleanupTask,
+  getAuditByUsageId,
+  getAuditByRequestId,
+  getAuditBody
 }
 
 export default adminUsageAPI

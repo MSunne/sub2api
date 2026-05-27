@@ -451,6 +451,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	clientOutputStarted := false
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	initialBufferTimeout := s.streamInitialBufferTimeout()
+	var firstPendingAt time.Time
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -484,6 +486,28 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			Duration:      time.Since(startTime),
 			FirstTokenMs:  firstTokenMs,
 		}
+	}
+	releasePending := func() {
+		if clientDisconnected || clientOutputStarted {
+			return
+		}
+		writeStreamHeaders()
+		for _, pending := range pendingSSE {
+			if _, err := fmt.Fprint(c.Writer, pending); err != nil {
+				clientDisconnected = true
+				logger.L().Info("openai chat_completions stream: client disconnected while releasing pending stream buffer",
+					zap.String("request_id", requestID),
+				)
+				return
+			}
+		}
+		pendingSSE = pendingSSE[:0]
+		clientOutputStarted = true
+		c.Writer.Flush()
+		logger.L().Debug("openai chat_completions stream: released initial stream buffer",
+			zap.String("request_id", requestID),
+			zap.Duration("timeout", initialBufferTimeout),
+		)
 	}
 
 	processDataLine := func(payload string) bool {
@@ -522,22 +546,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+					if firstPendingAt.IsZero() {
+						firstPendingAt = time.Now()
+					}
 					pendingSSE = append(pendingSSE, sse)
 					continue
 				}
 				if !clientOutputStarted {
-					writeStreamHeaders()
-					for _, pending := range pendingSSE {
-						if _, err := fmt.Fprint(c.Writer, pending); err != nil {
-							clientDisconnected = true
-							logger.L().Info("openai chat_completions stream: client disconnected while flushing pending chunks",
-								zap.String("request_id", requestID),
-							)
-							break
-						}
-					}
-					pendingSSE = pendingSSE[:0]
-					clientOutputStarted = !clientDisconnected
+					releasePending()
 					if clientDisconnected {
 						break
 					}
@@ -566,22 +582,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+					if firstPendingAt.IsZero() {
+						firstPendingAt = time.Now()
+					}
 					pendingSSE = append(pendingSSE, sse)
 					continue
 				}
 				if !clientOutputStarted {
-					writeStreamHeaders()
-					for _, pending := range pendingSSE {
-						if _, err := fmt.Fprint(c.Writer, pending); err != nil {
-							clientDisconnected = true
-							logger.L().Info("openai chat_completions stream: client disconnected during pending final flush",
-								zap.String("request_id", requestID),
-							)
-							break
-						}
-					}
-					pendingSSE = pendingSSE[:0]
-					clientOutputStarted = !clientDisconnected
+					releasePending()
 					if clientDisconnected {
 						break
 					}
@@ -600,18 +608,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
 			}
 			if len(pendingSSE) > 0 {
-				writeStreamHeaders()
-				for _, pending := range pendingSSE {
-					if _, err := fmt.Fprint(c.Writer, pending); err != nil {
-						clientDisconnected = true
-						logger.L().Info("openai chat_completions stream: client disconnected during final pending flush",
-							zap.String("request_id", requestID),
-						)
-						break
-					}
-				}
-				pendingSSE = pendingSSE[:0]
-				clientOutputStarted = !clientDisconnected
+				releasePending()
 			}
 		}
 		// Send [DONE] sentinel
@@ -656,8 +653,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		keepaliveInterval = time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	}
 
-	// No keepalive: fast synchronous path
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	// No keepalive and no initial-buffer release: fast synchronous path
+	if streamInterval <= 0 && keepaliveInterval <= 0 && initialBufferTimeout <= 0 {
 		var parser openAICompatSSEFrameParser
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -729,6 +726,44 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 	lastDataAt := time.Now()
 	var parser openAICompatSSEFrameParser
+	var initialBufferTimer *time.Timer
+	var initialBufferCh <-chan time.Time
+	stopInitialBufferTimer := func() {
+		if initialBufferTimer != nil {
+			if !initialBufferTimer.Stop() {
+				select {
+				case <-initialBufferTimer.C:
+				default:
+				}
+			}
+			initialBufferTimer = nil
+			initialBufferCh = nil
+		}
+	}
+	armInitialBufferTimer := func() {
+		if initialBufferTimeout <= 0 || firstPendingAt.IsZero() || clientOutputStarted || clientDisconnected {
+			stopInitialBufferTimer()
+			return
+		}
+		delay := time.Until(firstPendingAt.Add(initialBufferTimeout))
+		if delay < 0 {
+			delay = 0
+		}
+		if initialBufferTimer == nil {
+			initialBufferTimer = time.NewTimer(delay)
+			initialBufferCh = initialBufferTimer.C
+			return
+		}
+		if !initialBufferTimer.Stop() {
+			select {
+			case <-initialBufferTimer.C:
+			default:
+			}
+		}
+		initialBufferTimer.Reset(delay)
+		initialBufferCh = initialBufferTimer.C
+	}
+	defer stopInitialBufferTimer()
 
 	for {
 		select {
@@ -760,6 +795,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if processFrame(frame) {
 				return finalizeStream()
 			}
+			armInitialBufferTimer()
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -796,6 +832,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				continue
 			}
 			c.Writer.Flush()
+		case <-initialBufferCh:
+			if !clientOutputStarted && len(pendingSSE) > 0 && openAIStreamInitialBufferExpired(firstPendingAt, time.Now(), initialBufferTimeout) {
+				releasePending()
+			}
+			armInitialBufferTimer()
 		}
 	}
 }

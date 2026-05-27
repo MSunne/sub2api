@@ -265,7 +265,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveRawCCUpstreamEndpoint(c, account)
 
-		h.submitOpenAIUsageRecordTask(result, func(ctx context.Context) {
+		h.submitOpenAIUsageRecordTaskFromContext(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,

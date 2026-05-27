@@ -3556,6 +3556,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	pendingLines := make([]string, 0, 8)
+	initialBufferTimeout := s.streamInitialBufferTimeout()
+	var firstPendingAt time.Time
 	writePendingLines := func() bool {
 		for _, pending := range pendingLines {
 			if _, err := fmt.Fprintln(w, pending); err != nil {
@@ -3628,7 +3630,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 		if !clientDisconnected {
 			if !clientOutputStarted && !lineStartsClientOutput {
+				if firstPendingAt.IsZero() {
+					firstPendingAt = time.Now()
+				}
 				pendingLines = append(pendingLines, line)
+				if openAIStreamInitialBufferExpired(firstPendingAt, time.Now(), initialBufferTimeout) && writePendingLines() {
+					clientOutputStarted = true
+					flusher.Flush()
+				}
 				continue
 			}
 			if !clientOutputStarted && len(pendingLines) > 0 {
@@ -4356,6 +4365,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var streamFailoverErr error
+	initialBufferTimeout := s.streamInitialBufferTimeout()
+	var firstPendingAt time.Time
 	sendErrorEvent := func(reason string) {
 		if errorEventSent || clientDisconnected {
 			return
@@ -4512,6 +4523,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 						clientOutputStarted = true
 						lastDownstreamWriteAt = time.Now()
 					}
+				} else if !clientOutputStarted && bufferedWriter.Buffered() > 0 && firstPendingAt.IsZero() {
+					firstPendingAt = time.Now()
 				}
 			}
 
@@ -4545,7 +4558,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	if streamInterval <= 0 && keepaliveInterval <= 0 && initialBufferTimeout <= 0 {
 		defer putSSEScannerBuf64K(scanBuf)
 		for scanner.Scan() {
 			processSSELine(scanner.Text(), true)
@@ -4590,6 +4603,44 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		}
 	}(scanBuf)
 	defer close(done)
+	var initialBufferTimer *time.Timer
+	var initialBufferCh <-chan time.Time
+	stopInitialBufferTimer := func() {
+		if initialBufferTimer != nil {
+			if !initialBufferTimer.Stop() {
+				select {
+				case <-initialBufferTimer.C:
+				default:
+				}
+			}
+			initialBufferTimer = nil
+			initialBufferCh = nil
+		}
+	}
+	armInitialBufferTimer := func() {
+		if initialBufferTimeout <= 0 || firstPendingAt.IsZero() || clientOutputStarted || clientDisconnected {
+			stopInitialBufferTimer()
+			return
+		}
+		delay := time.Until(firstPendingAt.Add(initialBufferTimeout))
+		if delay < 0 {
+			delay = 0
+		}
+		if initialBufferTimer == nil {
+			initialBufferTimer = time.NewTimer(delay)
+			initialBufferCh = initialBufferTimer.C
+			return
+		}
+		if !initialBufferTimer.Stop() {
+			select {
+			case <-initialBufferTimer.C:
+			default:
+			}
+		}
+		initialBufferTimer.Reset(delay)
+		initialBufferCh = initialBufferTimer.C
+	}
+	defer stopInitialBufferTimer()
 
 	for {
 		select {
@@ -4604,6 +4655,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if streamFailoverErr != nil {
 				return resultWithUsage(), streamFailoverErr
 			}
+			armInitialBufferTimer()
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -4639,6 +4691,21 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			} else {
 				lastDownstreamWriteAt = time.Now()
 			}
+		case <-initialBufferCh:
+			if !clientOutputStarted && bufferedWriter.Buffered() > 0 && openAIStreamInitialBufferExpired(firstPendingAt, time.Now(), initialBufferTimeout) {
+				if err := flushBuffered(); err != nil {
+					clientDisconnected = true
+					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during initial stream buffer flush, continuing to drain upstream for billing")
+				} else {
+					clientOutputStarted = true
+					lastDownstreamWriteAt = time.Now()
+					logger.L().Debug("openai responses stream: released initial stream buffer",
+						zap.Duration("timeout", initialBufferTimeout),
+						zap.String("request_id", upstreamRequestID),
+					)
+				}
+			}
+			armInitialBufferTimer()
 		}
 	}
 
