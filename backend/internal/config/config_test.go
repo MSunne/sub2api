@@ -510,8 +510,8 @@ func TestLoadDefaultDashboardCacheConfig(t *testing.T) {
 	if !cfg.Dashboard.Enabled {
 		t.Fatalf("Dashboard.Enabled = false, want true")
 	}
-	if cfg.Dashboard.KeyPrefix != "sub2api:" {
-		t.Fatalf("Dashboard.KeyPrefix = %q, want %q", cfg.Dashboard.KeyPrefix, "sub2api:")
+	if cfg.Dashboard.KeyPrefix != "viz2ai:" {
+		t.Fatalf("Dashboard.KeyPrefix = %q, want %q", cfg.Dashboard.KeyPrefix, "viz2ai:")
 	}
 	if cfg.Dashboard.StatsFreshTTLSeconds != 15 {
 		t.Fatalf("Dashboard.StatsFreshTTLSeconds = %d, want 15", cfg.Dashboard.StatsFreshTTLSeconds)

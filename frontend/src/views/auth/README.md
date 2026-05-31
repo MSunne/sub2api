@@ -1,6 +1,6 @@
 # Authentication Views
 
-This directory contains Vue 3 authentication views for the Sub2API frontend application.
+This directory contains Vue 3 authentication views for the viz2ai frontend application.
 
 ## Components
 

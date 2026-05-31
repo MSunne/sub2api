@@ -48,6 +48,15 @@ func (s *settingPublicRepoStub) Delete(ctx context.Context, key string) error {
 	panic("unexpected Delete call")
 }
 
+func TestSettingService_GetPublicSettings_DefaultSiteNameIsViz2AI(t *testing.T) {
+	repo := &settingPublicRepoStub{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "viz2ai", settings.SiteName)
+}
+
 func TestSettingService_GetPublicSettings_ExposesRegistrationEmailSuffixWhitelist(t *testing.T) {
 	repo := &settingPublicRepoStub{
 		values: map[string]string{

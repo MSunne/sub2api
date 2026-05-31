@@ -5,13 +5,13 @@ set -euo pipefail
 # 用法：
 #   sudo ./install-datamanagementd.sh --binary /path/to/datamanagementd
 # 或：
-#   sudo ./install-datamanagementd.sh --source /path/to/sub2api/repo
+#   sudo ./install-datamanagementd.sh --source /path/to/viz2ai/repo
 
 BIN_PATH=""
 SOURCE_PATH=""
-INSTALL_DIR="/opt/sub2api"
-DATA_DIR="/var/lib/sub2api/datamanagement"
-SERVICE_FILE_NAME="sub2api-datamanagementd.service"
+INSTALL_DIR="/opt/viz2ai"
+DATA_DIR="/var/lib/viz2ai/datamanagement"
+SERVICE_FILE_NAME="viz2ai-datamanagementd.service"
 
 function print_help() {
   cat <<'EOF'
@@ -20,12 +20,12 @@ function print_help() {
 
 参数:
   --binary  指定已构建的 datamanagementd 二进制路径
-  --source  指定 sub2api 仓库路径（脚本会执行 go build）
+  --source  指定 viz2ai 仓库路径（脚本会执行 go build）
   -h, --help 显示帮助
 
 示例:
   sudo ./install-datamanagementd.sh --binary ./datamanagement/datamanagementd
-  sudo ./install-datamanagementd.sh --source /opt/sub2api-src
+  sudo ./install-datamanagementd.sh --source /opt/viz2ai-src
 EOF
 }
 
@@ -81,11 +81,11 @@ if [[ ! -f "$BIN_PATH" ]]; then
   exit 1
 fi
 
-if ! id sub2api >/dev/null 2>&1; then
-  echo "[2/6] 创建系统用户 sub2api..."
-  useradd --system --no-create-home --shell /usr/sbin/nologin sub2api
+if ! id viz2ai >/dev/null 2>&1; then
+  echo "[2/6] 创建系统用户 viz2ai..."
+  useradd --system --no-create-home --shell /usr/sbin/nologin viz2ai
 else
-  echo "[2/6] 系统用户 sub2api 已存在，跳过创建"
+  echo "[2/6] 系统用户 viz2ai 已存在，跳过创建"
 fi
 
 echo "[3/6] 安装 datamanagementd 二进制..."
@@ -94,7 +94,7 @@ install -m 0755 "$BIN_PATH" "$INSTALL_DIR/datamanagementd"
 
 echo "[4/6] 准备数据目录..."
 mkdir -p "$DATA_DIR"
-chown -R sub2api:sub2api /var/lib/sub2api
+chown -R viz2ai:viz2ai /var/lib/viz2ai
 chmod 0750 "$DATA_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,17 +107,17 @@ fi
 echo "[5/6] 安装 systemd 服务..."
 cp "$SERVICE_TEMPLATE" "/etc/systemd/system/$SERVICE_FILE_NAME"
 systemctl daemon-reload
-systemctl enable --now sub2api-datamanagementd
+systemctl enable --now viz2ai-datamanagementd
 
 echo "[6/6] 完成，当前状态："
-systemctl --no-pager --full status sub2api-datamanagementd || true
+systemctl --no-pager --full status viz2ai-datamanagementd || true
 
 cat <<'EOF'
 
 下一步建议：
-1. 查看日志：sudo journalctl -u sub2api-datamanagementd -f
-2. 在 sub2api（容器部署时）挂载 socket:
-   /tmp/sub2api-datamanagement.sock:/tmp/sub2api-datamanagement.sock
+1. 查看日志：sudo journalctl -u viz2ai-datamanagementd -f
+2. 在 viz2ai（容器部署时）挂载 socket:
+   /tmp/viz2ai-datamanagement.sock:/tmp/viz2ai-datamanagement.sock
 3. 进入管理后台“数据管理”页面确认 agent=enabled
 
 EOF
