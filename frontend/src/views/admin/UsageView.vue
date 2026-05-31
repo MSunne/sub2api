@@ -161,8 +161,8 @@
             运行结果
           </button>
         </div>
-        <RequestAuditBodyPanel v-if="auditBodyTab === 'request'" :audit="selectedAudit" role="request" :load-body="adminUsageAPI.getAuditBody" />
-        <RequestAuditBodyPanel v-else :audit="selectedAudit" role="response" :load-body="adminUsageAPI.getAuditBody" />
+        <RequestAuditBodyPanel v-show="auditBodyTab === 'request'" :audit="selectedAudit" role="request" :load-body="adminUsageAPI.getAuditBody" />
+        <RequestAuditBodyPanel v-show="auditBodyTab === 'response'" :audit="selectedAudit" role="response" :load-body="adminUsageAPI.getAuditBody" />
       </template>
     </div>
   </BaseDialog>

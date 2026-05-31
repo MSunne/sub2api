@@ -44,37 +44,40 @@
         </template>
 
         <template v-else-if="body.body_kind === 'sse'">
-          <div class="space-y-2">
-            <div v-for="(event, index) in sseEvents" :key="index" class="rounded border border-gray-200 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-800">
-              <div class="mb-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                <span>#{{ index + 1 }}</span>
-                <span v-if="event.event" class="rounded bg-gray-200 px-1.5 py-0.5 font-mono dark:bg-dark-700">{{ event.event }}</span>
+          <div :class="contentShellClass">
+            <div class="space-y-2">
+              <div v-for="(event, index) in sseEvents" :key="index" class="rounded border border-gray-200 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-800">
+                <div class="mb-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <span>#{{ index + 1 }}</span>
+                  <span v-if="event.event" class="rounded bg-gray-200 px-1.5 py-0.5 font-mono dark:bg-dark-700">{{ event.event }}</span>
+                </div>
+                <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-800 dark:text-gray-100">{{ formatMaybeJSON(event.data) }}</pre>
               </div>
-              <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-800 dark:text-gray-100">{{ formatMaybeJSON(event.data) }}</pre>
             </div>
+            <ImagePreviewRail v-if="imagePreviews.length" :previews="imagePreviews" />
           </div>
         </template>
 
         <template v-else-if="body.body_kind === 'json'">
-          <div v-if="mediaPreviews.length" class="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div v-for="(media, index) in mediaPreviews" :key="index" class="rounded border border-gray-200 p-3 dark:border-dark-600">
-              <div class="mb-2 text-xs font-medium text-gray-600 dark:text-gray-300">{{ media.label }}</div>
-              <img v-if="media.type === 'image'" :src="media.src" class="max-h-72 max-w-full rounded object-contain" alt="JSON 内嵌图片" />
-              <audio v-else :src="media.src" controls class="w-full"></audio>
-            </div>
+          <div :class="contentShellClass">
+            <pre class="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-100">{{ formattedJSON }}</pre>
+            <ImagePreviewRail v-if="imagePreviews.length" :previews="imagePreviews" />
           </div>
-          <pre class="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-100">{{ formattedJSON }}</pre>
         </template>
 
-        <pre v-else class="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-100">{{ body.body }}</pre>
+        <div v-else :class="contentShellClass">
+          <pre class="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-100">{{ body.body }}</pre>
+          <ImagePreviewRail v-if="imagePreviews.length" :previews="imagePreviews" />
+        </div>
       </template>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import type { RequestAuditBody, RequestAuditBodyRole, RequestAuditLog } from '@/types'
+import { extractBase64ImagesFromAuditContent, type AuditImagePreview } from '@/utils/requestAuditImages'
 
 interface Props {
   audit: RequestAuditLog
@@ -84,7 +87,7 @@ interface Props {
 
 const props = defineProps<Props>()
 
-const expanded = ref(false)
+const expanded = ref(true)
 const loading = ref(false)
 const error = ref('')
 const body = ref<RequestAuditBody | null>(null)
@@ -97,14 +100,19 @@ const truncated = computed(() => props.role === 'request' ? props.audit.request_
 const sizeBytes = computed(() => props.role === 'request' ? props.audit.request_bytes : props.audit.response_bytes)
 
 watch(
-  () => [props.audit.id, props.role],
+  () => props.audit.id,
   () => {
-    expanded.value = false
+    expanded.value = true
     loading.value = false
     error.value = ''
     body.value = null
+    void loadBody()
   }
 )
+
+onMounted(() => {
+  void loadBody()
+})
 
 const toggle = async () => {
   if (expanded.value) {
@@ -118,6 +126,7 @@ const toggle = async () => {
 }
 
 const loadBody = async () => {
+  if (!expanded.value || loading.value || body.value) return
   loading.value = true
   error.value = ''
   try {
@@ -153,18 +162,16 @@ const formattedJSON = computed(() => {
   return JSON.stringify(summarizeLargeJSONStrings(parsedJSON.value), null, 2)
 })
 
-interface MediaPreview {
-  type: 'image' | 'audio'
-  src: string
-  label: string
-}
-
-const mediaPreviews = computed<MediaPreview[]>(() => {
-  if (!parsedJSON.value) return []
-  const previews: MediaPreview[] = []
-  collectJSONMedia(parsedJSON.value, previews, 'root')
-  return previews.slice(0, 12)
+const imagePreviews = computed<AuditImagePreview[]>(() => {
+  if (!body.value) return []
+  const content = parsedJSON.value ?? body.value.body
+  return extractBase64ImagesFromAuditContent(content, props.role).slice(0, 12)
 })
+
+const contentShellClass = computed(() => imagePreviews.value.length
+  ? 'grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_280px]'
+  : 'space-y-3'
+)
 
 const sseEvents = computed(() => {
   if (!body.value) return []
@@ -200,32 +207,6 @@ const parseSSE = (raw: string) => raw
 
 const dataURLPattern = /^data:(image|audio)\/[^;]+;base64,/i
 
-function collectJSONMedia(value: unknown, previews: MediaPreview[], path: string): void {
-  if (previews.length >= 12 || value == null) return
-  if (typeof value === 'string') {
-    const match = value.match(dataURLPattern)
-    if (match) {
-      previews.push({ type: match[1].toLowerCase() === 'audio' ? 'audio' : 'image', src: value, label: path })
-    }
-    return
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => collectJSONMedia(item, previews, `${path}[${index}]`))
-    return
-  }
-  if (typeof value === 'object') {
-    const record = value as Record<string, unknown>
-    const mime = typeof record.mime_type === 'string' ? record.mime_type : ''
-    if (typeof record.b64_json === 'string') {
-      previews.push({ type: 'image', src: `data:${mime || 'image/png'};base64,${record.b64_json}`, label: `${path}.b64_json` })
-    }
-    if (typeof record.data === 'string' && /^image\/|^audio\//.test(mime)) {
-      previews.push({ type: mime.startsWith('audio/') ? 'audio' : 'image', src: `data:${mime};base64,${record.data}`, label: `${path}.data` })
-    }
-    Object.entries(record).forEach(([key, child]) => collectJSONMedia(child, previews, `${path}.${key}`))
-  }
-}
-
 function summarizeLargeJSONStrings(value: unknown): unknown {
   if (typeof value === 'string') {
     const dataMatch = value.match(dataURLPattern)
@@ -242,4 +223,37 @@ function summarizeLargeJSONStrings(value: unknown): unknown {
   }
   return value
 }
+
+const ImagePreviewRail = defineComponent({
+  name: 'ImagePreviewRail',
+  props: {
+    previews: {
+      type: Array as () => AuditImagePreview[],
+      required: true,
+    },
+  },
+  setup(props) {
+    return () => h('aside', {
+      class: 'space-y-3 rounded border border-gray-200 bg-white p-3 dark:border-dark-600 dark:bg-dark-900',
+    }, [
+      h('div', { class: 'text-xs font-semibold text-gray-700 dark:text-gray-200' }, '图片预览'),
+      ...props.previews.map((preview, index) => h('a', {
+        key: preview.id,
+        href: preview.dataUrl,
+        target: '_blank',
+        rel: 'noreferrer',
+        class: 'block rounded border border-gray-200 p-2 transition-colors hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-800',
+        title: preview.label,
+      }, [
+        h('div', { class: 'mb-2 truncate text-xs text-gray-500 dark:text-gray-400' }, `#${index + 1} ${preview.label}`),
+        h('img', {
+          src: preview.dataUrl,
+          alt: preview.label,
+          class: 'max-h-72 w-full rounded object-contain',
+          loading: 'lazy',
+        }),
+      ])),
+    ])
+  },
+})
 </script>
